@@ -1,0 +1,4 @@
+
+# Ignore Python virtual environment created for this project
+myEnv/
+
