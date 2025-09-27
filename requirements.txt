@@ -1,2 +1,4 @@
 transformers
 torch
+hf_xet
+accelerate

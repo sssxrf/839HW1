@@ -1,0 +1,57 @@
+Generally the model I used: ChatGPT-5 Thinking
+how do I verify the outputs: I actually ran them in the git repo and overleaf
+
+\begin{equation*}
+
+~C(V,E,H,L,P)=VE + PE \;+\; L\big[ (4E^2{+}4E) + (8E^2{+}5E) + 4E\big] \;+\; 2E \\
+~=~ E(V{+}P) + L\,(12E^2{+}13E) + 2E~
+
+\end{equation*} help me modify the overleaf code so that it looks tight and nice
+ChatGPT 说：
+已思考 11s
+
+Here are a few clean, tight LaTeX options—pick the style you like and paste it into Overleaf.
+
+Compact two-line, aligned (recommended)
+\begin{equation}
+\begin{aligned}
+C(V,E,H,L,P)
+  &= VE + PE + L\big((4E^2+4E) + (8E^2+5E) + 4E\big) + 2E \\
+  &= E(V+P) + L\,(12E^2+13E) + 2E.
+\end{aligned}
+\end{equation}
+
+Single line (super tight)
+\[
+C(V,E,H,L,P)=E(V+P)+L(12E^2+13E)+2E.
+\]
+
+With a small, neat box (if you want it to pop)
+\begin{equation}
+\boxed{\,C(V,E,H,L,P)=E(V+P)+L(12E^2+13E)+2E\,}
+\end{equation}
+
+Local tighter display spacing (optional)
+
+If you want less vertical whitespace just for this equation:
+
+\begingroup
+\setlength{\abovedisplayskip}{6pt}
+\setlength{\belowdisplayskip}{6pt}
+\begin{equation}
+\begin{aligned}
+C(V,E,H,L,P)
+  &= VE + PE + L\big((4E^2+4E) + (8E^2+5E) + 4E\big) + 2E \\
+  &= E(V+P) + L\,(12E^2+13E) + 2E.
+\end{aligned}
+\end{equation}
+\endgroup
+
+
+Notes:
+
+Removed the ~ (non-breaking spaces) and used standard spacing (\, only where helpful).
+
+Wrapped inner sums in \big(...\big) so the bracket scales but stays neat.
+
+Aligned at = for readability without wasting space.
