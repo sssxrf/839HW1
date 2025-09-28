@@ -1,5 +1,6 @@
 Generally the model I used: ChatGPT-5 Thinking
-how do I verify the outputs: I actually ran them in the git repo and overleaf
+how do I verify the outputs: I actually ran them in python and overleaf. 
+For the Qwen3-8B code, I used it as the start point.
 
 \begin{equation*}
 
@@ -55,3 +56,217 @@ Removed the ~ (non-breaking spaces) and used standard spacing (\, only where hel
 Wrapped inner sums in \big(...\big) so the bracket scales but stays neat.
 
 Aligned at = for readability without wasting space.
+
+according to Qwen3B config, what is "hidden_act": "silu" and "RoPe" ?
+ChatGPT 说：
+已思考 42s
+
+Short answer:
+
+"hidden_act": "silu" — the MLP’s activation is SiLU (aka Swish-1), defined element-wise as
+
+s
+i
+l
+u
+(
+𝑥
+)
+=
+𝑥
+⋅
+𝜎
+(
+𝑥
+)
+silu(x)=x⋅σ(x) where 
+𝜎
+(
+𝑥
+)
+σ(x) is the logistic sigmoid. In Qwen3 this is used in the feed-forward (SwiGLU-style) block. You can see hidden_act: "silu" in the model’s config.json. 
+Hugging Face
++1
+
+“RoPE” — Rotary Position Embedding: positional encoding applied by rotating query/key vectors in attention using fixed frequencies, which injects relative position information without a learned positional table (so no extra parameters). Qwen3 exposes RoPE settings in config (e.g., rope_theta: 1000000, max_position_embeddings), and may optionally use rope scaling for longer contexts. 
+Hugging Face
++2
+Hugging Face
++2
+
+If you want to point to the exact lines:
+
+In Qwen/Qwen3-8B/config.json you’ll find
+"hidden_act": "silu" and RoPE fields like "rope_theta": 1000000, plus "max_position_embeddings". 
+Hugging Face
+
+For a plain-English description of RoPE (and the math), see the original RoFormer paper and the Transformers Qwen3 config docs (they also describe rope scaling options)
+
+how do I calculate Qwen3-8B model's parameters' count per component in python?
+ChatGPT 说：
+已思考 19s
+
+Here’s a clean, self-contained Python script that (A) reads the Qwen/Qwen3-8B config to compute counts by formula, and (B) optionally loads the model and sums parameters per component by name (Q/K/V/O, gate/up/down, RMSNorms, QK-Norm, embeddings, LM head).
+
+Notes
+• Qwen3-8B is dense: no MoE “active params per token”.
+• Uses GQA (32 Q-heads, 8 KV-heads), RMSNorm, SwiGLU MLP, RoPE (no learned pos-emb), untied LM head.
+• Downloading weights (Option B) is large (~16GB). Option A (config-only) is fast.
+
+# qwen3_8b_param_counts.py
+# pip install transformers torch
+
+import re
+from dataclasses import dataclass
+
+# ---------- A) COUNT FROM CONFIG (FORMULAS) ----------
+def count_from_hf_config(model_id: str = "Qwen/Qwen3-8B"):
+    # Lazy-import to avoid heavy deps if you only want formulas
+    from transformers import AutoConfig
+    cfg = AutoConfig.from_pretrained(model_id)
+
+    # Extract what we need
+    V  = int(getattr(cfg, "vocab_size"))
+    E  = int(getattr(cfg, "hidden_size"))
+    I  = int(getattr(cfg, "intermediate_size"))
+    L  = int(getattr(cfg, "num_hidden_layers"))
+    H  = int(getattr(cfg, "num_attention_heads"))
+    Hkv = int(getattr(cfg, "num_key_value_heads"))
+    D  = int(getattr(cfg, "head_dim", E // H))  # some configs omit head_dim explicitly
+    tie = bool(getattr(cfg, "tie_word_embeddings", False))
+    attn_bias = bool(getattr(cfg, "attention_bias", False))  # should be False for Qwen3-8B
+
+    # Sanity: E == H * D
+    assert E == H * D, f"hidden_size ({E}) must equal num_attention_heads*head_dim ({H}*{D})"
+
+    # Formulas (no biases in QKV/WO; SwiGLU MLP; RMSNorm; QK-Norm)
+    # Attention per layer: q(E->E) + k(E->Hkv*D) + v(E->Hkv*D) + o(E->E)
+    attn_per_layer = (E * E) + (E * (Hkv * D)) + (E * (Hkv * D)) + (E * E)
+    # MLP per layer (SwiGLU): gate(E->I) + up(E->I) + down(I->E)
+    mlp_per_layer  = (E * I) + (E * I) + (I * E)
+    # RMSNorms per layer: input + post (weights only)
+    rms_per_layer  = 2 * E
+    # QK-Norm per layer: q_norm (D) + k_norm (D)
+    qkn_per_layer  = 2 * D
+
+    per_layer = attn_per_layer + mlp_per_layer + rms_per_layer + qkn_per_layer
+    blocks = L * per_layer
+
+    token_emb = V * E
+    lm_head   = 0 if tie else (E * V)  # Qwen3-8B has tie_word_embeddings = false
+    total = token_emb + lm_head + blocks
+
+    return {
+        "config": dict(V=V, E=E, I=I, L=L, H=H, H_kv=Hkv, D=D, tie_word_embeddings=tie,
+                       attention_bias=attn_bias),
+        "per_layer": {
+            "attention_qkvo": attn_per_layer,
+            "mlp_gate_up_down": mlp_per_layer,
+            "rmsnorms": rms_per_layer,
+            "qk_norm": qkn_per_layer,
+            "per_layer_total": per_layer,
+        },
+        "blocks_total": blocks,
+        "embeddings": token_emb,
+        "lm_head": lm_head,
+        "grand_total": total,
+    }
+
+# ---------- B) OPTIONAL: COUNT BY LOADING WEIGHTS ----------
+def count_by_components_via_checkpoint(model_id: str = "Qwen/Qwen3-8B"):
+    # WARNING: downloads weights (~16GB)
+    from transformers import AutoModelForCausalLM, AutoConfig
+    cfg = AutoConfig.from_pretrained(model_id)
+    L = int(getattr(cfg, "num_hidden_layers"))
+    m = AutoModelForCausalLM.from_pretrained(model_id, device_map="cpu")
+
+    # Group regexes (match standard param names in this repo)
+    groups = {
+        "embed_tokens": re.compile(r"^model\.embed_tokens\.weight$"),
+        "lm_head":      re.compile(r"^lm_head\.weight$"),
+
+        "attn_q":       re.compile(r"\.self_attn\.q_proj\.weight$"),
+        "attn_k":       re.compile(r"\.self_attn\.k_proj\.weight$"),
+        "attn_v":       re.compile(r"\.self_attn\.v_proj\.weight$"),
+        "attn_o":       re.compile(r"\.self_attn\.o_proj\.weight$"),
+
+        "q_norm":       re.compile(r"\.self_attn\.q_norm\.weight$"),
+        "k_norm":       re.compile(r"\.self_attn\.k_norm\.weight$"),
+
+        "ln_in":        re.compile(r"\.input_layernorm\.weight$"),
+        "ln_post":      re.compile(r"\.post_attention_layernorm\.weight$"),
+
+        "mlp_gate":     re.compile(r"\.mlp\.gate_proj\.weight$"),
+        "mlp_up":       re.compile(r"\.mlp\.up_proj\.weight$"),
+        "mlp_down":     re.compile(r"\.mlp\.down_proj\.weight$"),
+    }
+
+    counts = {k: 0 for k in groups}
+    counts["other"] = 0
+    for n, p in m.named_parameters():
+        matched = False
+        for k, rx in groups.items():
+            if rx.search(n):
+                counts[k] += p.numel()
+                matched = True
+                break
+        if not matched:
+            counts["other"] += p.numel()
+
+    # Aggregate per-layer component counts (divide by L)
+    per_layer_counts = {
+        "attention_qkvo": (counts["attn_q"] + counts["attn_k"] + counts["attn_v"] + counts["attn_o"]) // L,
+        "mlp_gate_up_down": (counts["mlp_gate"] + counts["mlp_up"] + counts["mlp_down"]) // L,
+        "rmsnorms": (counts["ln_in"] + counts["ln_post"]) // L,
+        "qk_norm": (counts["q_norm"] + counts["k_norm"]) // L,
+    }
+
+    total_sum = sum(counts.values())
+    return {
+        "raw_counts": counts,
+        "per_layer_from_checkpoint": per_layer_counts,
+        "grand_total_from_checkpoint": total_sum,
+        "layers": L,
+    }
+
+# ---------- Pretty print ----------
+def fmt(n): return f"{n:,}"
+
+if __name__ == "__main__":
+    print("=== Qwen3-8B :: formula-based (from config) ===")
+    res = count_from_hf_config("Qwen/Qwen3-8B")
+    cfg = res["config"]
+    print("Config:", cfg)
+    print("Per-layer attention :", fmt(res["per_layer"]["attention_qkvo"]))
+    print("Per-layer MLP       :", fmt(res["per_layer"]["mlp_gate_up_down"]))
+    print("Per-layer RMSNorms  :", fmt(res["per_layer"]["rmsnorms"]))
+    print("Per-layer QK-Norm   :", fmt(res["per_layer"]["qk_norm"]))
+    print("Per-layer TOTAL     :", fmt(res["per_layer"]["per_layer_total"]))
+    print("Blocks TOTAL        :", fmt(res["blocks_total"]))
+    print("Token embeddings    :", fmt(res["embeddings"]))
+    print("LM head (untied)    :", fmt(res["lm_head"]))
+    print("GRAND TOTAL         :", fmt(res["grand_total"]))
+
+    # Optional: uncomment to verify against actual checkpoint tensors (large download)
+    # ck = count_by_components_via_checkpoint("Qwen/Qwen3-8B")
+    # print("\n=== Qwen3-8B :: checkpoint-based (by grouping names) ===")
+    # for k, v in ck["per_layer_from_checkpoint"].items():
+    #     print(f"Per-layer {k:18s}: {fmt(v)}")
+    # print("GRAND TOTAL (sum of tensors):", fmt(ck["grand_total_from_checkpoint"]))
+
+What you should see (formula path)
+
+Per-layer:
+• attention = 41,943,040
+• MLP = 150,994,944
+• RMSNorms = 8,192
+• QK-Norm = 256
+→ per-layer total = 192,946,432
+
+Totals:
+• blocks (×36) = 6,946,071,552
+• token embeddings = 622,329,856
+• LM head = 622,329,856
+• grand total = 8,190,731,264 (~8.19B)
+
+If you also run the checkpoint verification, the grouped sums per component will closely match these formula counts (minor differences only if a future revision changes naming or adds small buffers).
